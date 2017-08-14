@@ -1,6 +1,136 @@
 # CarND-Controls-MPC
 Self-Driving Car Engineer Nanodegree Program
 
+# 1.Model
+The kinematic model used in the project is described in the following formulas:
+![model](model.png)
+## 1.1 State
+The state variables of the model are comprised of:
+
+* *x,y* - current coordinates of the vehicle
+* *psi* - current vehicle direction
+* *v* - current speed (magnitue)
+* *cte* - cross track error
+* *epsi* - the error between the desired direction and current direction
+
+
+## 1.2 State update
+The model calculates the future state by applying the formulas above to the current state. Inputs to the state are the steering (*delta*) and throttle (*a*) values.
+
+# 2. Timestep and elapsed duration
+A final value of N = 10 and dt = 0.1 were chosen.
+
+These two values determine the future prediction and length of optimization of the MPC controller. The duration of the prediction is T=N*dt, in our case, 1 second. 
+
+Given that our reference track is an estimation with a 3rd degree polynomial, it will be approximate only in areas close to the vehicle. It doesn't make much sense to chose N/dt values that extend far into the future, so choosing a duration of 1 second, seems like a reasonable choice. 
+
+Other values were chosen, specially for dt, but they just seem to increase computational cost, given the MPC controller needs to do a lot more estimations, and didn't yield better track performance. Actually, some values of dt would yield unstable MPC behavior.
+
+# 3. Polynomial fit
+The waypoints passed are mapped into car coordinates from map coordinates first, and then fitted to a polynomial of third order. This happens in main.cpp:100-109.
+The mapping has the advangte to simplify calculations, given that some of the values turn into 0, in particular *px*, *py* and *psi*
+
+```c++
+  //----------------------------------------------------------------------------
+  // map to car coordinate transform. It implies ->  px = 0, py = 0, and psi = 0
+  Eigen::VectorXd ptscar_x(ptsx.size());
+  Eigen::VectorXd ptscar_y(ptsy.size());
+  for (int i = 0; i < ptsx.size(); i++) {
+    double dx = ptsx[i] - px;
+    double dy = ptsy[i] - py;
+    ptscar_x[i] = dx * cos(-psi) - dy * sin(-psi);
+    ptscar_y[i] = dx * sin(-psi) + dy * cos(-psi);
+  }
+
+  auto coeffs = polyfit( ptscar_x, ptscar_y, 3);
+```
+
+# 4. MPC 
+MPC controller is implemented in the MPC.cpp class by using IPOPT and CppAD. 
+## 4.1 Cost function
+A cost function is defined in FG_eval::operator(). The cost function adds up the cost into the fg[0] bin. 
+```c++
+    for (int t = 0; t < N; t++) {
+      fg[0] += 4000*CppAD::pow(vars[cte_start + t], 2);
+      fg[0] += 4000*CppAD::pow(vars[epsi_start + t], 2);
+      fg[0] += CppAD::pow(vars[v_start + t] - ref_v, 2);
+    }
+
+    // Minimize the use of actuators.
+    for (int t = 0; t < N - 1; t++) {
+      fg[0] += 5*CppAD::pow(vars[delta_start + t], 2);
+      fg[0] += 5*CppAD::pow(vars[a_start + t], 2);
+    }
+
+    // Minimize the value gap between sequential actuations.
+    for (int t = 0; t < N - 2; t++) {
+      fg[0] += 200*CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+      fg[0] += 10*CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+    }
+```
+Through experimentation I chose values for the cost function.
+
+I am heavily adding cost to CTE and epsi deviations. This makes the MPC controller try to follow the desired track quite strictly and actuate the throttle agressively for such effect, which is an interesting effect.
+Other factors added to the cost are the not to use actuators agressively, and minimize its change through time.
+
+Note 'ref_v', as the reference velocity. I set it to 100, so controller will try to go that fast, but will often prioritize keep vehicle close to desired track (by braking) over speeding. Lowering the weight on the CTE cost makes this effect very obvious.
+
+## 4.2 Model and Solver
+The model is implemented in FG_eval::operator():109-127 through the use of 'constrains' to zero. This makes IPOPT to match those values of the model, and also makes it calculate the delta and throttle values which are our values of interest.
+The solver glue is implemted under MPC::Solve
+
+# 5. Latency
+In order to deal with actuator latency the following technique is used:
+* A state simulation is run during the duration of the latency
+* The resulting state of the simulation is then fed into the MPC solver.
+
+Because due to latency, hour throttle and steer inputs are indeed only affecting behavior of the vehicle 'latency seconds' into the future, the only thing we need is the starting state of the vehicle at that moment. Given we have a kinematic model we can estimate the state of the vehicle after the latency time has elapsed. I used the following function in MPC::stateSimulation:133-165 to work it out:
+
+```c++
+Eigen::VectorXd MPC::stateSimulation(Eigen::VectorXd initState, Eigen::VectorXd coeffs, double timeInS, double steer, double throttle ) {
+    Eigen::VectorXd st(6);
+
+    int count = timeInS/dt;
+
+    st = initState;
+
+    double x0,y0,psi0,v0,cte0,epsi0;
+
+    for(int i=0; i<count; i++) {
+        x0 = st[0];
+        y0 = st[1];
+        psi0 = st[2];
+        v0   = st[3];
+        cte0 = st[4];
+        epsi0 = st[5];
+
+        st[0] = x0 + v0 * cos(psi0) * dt;
+        st[1] = y0 + v0 * sin(psi0) * dt;
+        st[2] = psi0 - v0 * steer/Lf * dt;
+        st[3] = v0 + throttle * dt;
+
+
+        // during latency calculations, cte & epsi don't affect the future state
+        double f0 = coeffs[0] + coeffs[1] * x0 + coeffs[2] * pow(x0,2) + coeffs[3] * pow(x0,3);
+        double psides0 = atan(coeffs[1] + 2*coeffs[2]*x0 + 3*coeffs[3]*pow(x0, 2)); 
+
+        st[4] = (f0-y0) + (v0 * sin(epsi0) * dt);
+        st[5] = (psi0 - psides0) - v0 * steer/Lf *dt;
+    }
+
+    return st;
+}
+
+```
+This method is called before calling the solver in main.cpp:139, and the output state is what is then fed onto MPC:Solve.
+
+While this is a generic solution for any given delay duration, in our particular chosen values of N=10 and dt=0.1, makes it that the simulation loop only interates once, and therefore calculates just the next step. Therefore for these particular values it could be simplied further.
+
+# 6. Final Considerations
+[Here is a video](mpc.mp4) of the car with ref_v=100 and all the above values set.
+
+
+
 ---
 
 ## Dependencies

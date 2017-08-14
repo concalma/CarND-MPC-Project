@@ -20,7 +20,7 @@ The model calculates the future state by applying the formulas above to the curr
 # 2. Timestep and elapsed duration
 A final value of N = 10 and dt = 0.1 were chosen.
 
-These two values determine the future prediction and length of optimization of the MPC controller. The duration of the prediction is T=N*dt, in our case, 1 second. 
+These two values determine the future prediction and length of optimizition of the MPC controller. The duration of the prediction is T=N*dt, in our case, 1 second. 
 
 Given that our reference track is an estimation with a 3rd degree polynomial, it will be approximate only in areas close to the vehicle. It doesn't make much sense to chose N/dt values that extend far into the future, so choosing a duration of 1 second, seems like a reasonable choice. 
 
@@ -28,7 +28,7 @@ Other values were chosen, specially for dt, but they just seem to increase compu
 
 # 3. Polynomial fit
 The waypoints passed are mapped into car coordinates from map coordinates first, and then fitted to a polynomial of third order. This happens in main.cpp:100-109.
-The mapping has the advangte to simplify calculations, given that some of the values turn into 0, in particular *px*, *py* and *psi*
+The mapping has the advantage to simplify calculations, given that some of the values turn into 0, in particular *px*, *py* and *psi*
 
 ```c++
   //----------------------------------------------------------------------------
@@ -84,7 +84,7 @@ In order to deal with actuator latency the following technique is used:
 * A state simulation is run during the duration of the latency
 * The resulting state of the simulation is then fed into the MPC solver.
 
-Because due to latency, hour throttle and steer inputs are indeed only affecting behavior of the vehicle 'latency seconds' into the future, the only thing we need is the starting state of the vehicle at that moment. Given we have a kinematic model we can estimate the state of the vehicle after the latency time has elapsed. I used the following function in MPC::stateSimulation:133-165 to work it out:
+Because due to latency, our throttle and steer inputs are indeed only affecting behavior of the vehicle 'latency seconds' into the future, the only thing we need is the starting state of the vehicle at that moment. Given we have a kinematic model we can estimate the state of the vehicle after the latency time has elapsed. I used the following function in MPC::stateSimulation:133-165 to work it out:
 
 ```c++
 Eigen::VectorXd MPC::stateSimulation(Eigen::VectorXd initState, Eigen::VectorXd coeffs, double timeInS, double steer, double throttle ) {
@@ -127,11 +127,12 @@ This method is called before calling the solver in main.cpp:139, and the output 
 While this is a generic solution for any given delay duration, in our particular chosen values of N=10 and dt=0.1, makes it that the simulation loop only interates once, and therefore calculates just the next step. Therefore for these particular values it could be simplied further.
 
 # 6. Final Considerations
-[Here is a video](mpc.mp4) of the car with ref_v=100 and all the above values set.
+[Here is a video](mpc.mp4) of the car with ref_v=100 and all the above values set. Due to the latency adjustment mechanism used, the predicted green track, coming out of the MPC controller is offset 'latency ms' into the future. This is sensical, given the actuation of the controller is only taking place exactly at those moments.
 
 
 
 ---
+# ORIGINAL README
 
 ## Dependencies
 

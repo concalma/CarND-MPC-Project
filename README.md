@@ -122,7 +122,17 @@ Eigen::VectorXd MPC::stateSimulation(Eigen::VectorXd initState, Eigen::VectorXd 
 }
 
 ```
-This method is called before calling the solver in main.cpp:139, and the output state is what is then fed onto MPC:Solve.
+This method is called before calling the solver in main.cpp:139, and the output state is what is then fed onto MPC:Solve. 
+```c++
+  if(delayInS!=0) {
+      // get future state if we are simulating latency
+      // we consider throttle_value an approximation of acceleration
+      state = mpc.stateSimulation(state, coeffs, delayInS, steer_value * deg2rad(25)*Lf, throttle_value );
+
+  }
+
+  auto vars = mpc.Solve(state, coeffs);
+```
 
 While this is a generic solution for any given delay duration, in our particular chosen values of N=10 and dt=0.1, makes it that the simulation loop only interates once, and therefore calculates just the next step. Therefore for these particular values it could be simplied further.
 

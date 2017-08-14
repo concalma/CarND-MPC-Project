@@ -84,13 +84,46 @@ int main() {
         auto j = json::parse(s);
         string event = j[0].get<string>();
         if (event == "telemetry") {
+          double delayInS = 0.1;
           // j[1] is the data JSON object
-          vector<double> ptsx = j[1]["ptsx"];
-          vector<double> ptsy = j[1]["ptsy"];
+          vector<double> ptsx = j[1]["ptsx"]; // waypoints
+          vector<double> ptsy = j[1]["ptsy"]; 
           double px = j[1]["x"];
           double py = j[1]["y"];
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
+          double steer_value = j[1]["steering_angle"];
+          double throttle_value = j[1]["throttle"];
+
+          //----------------------------------------------------------------------------
+          // map to car coordinate transform. It implies ->  px = 0, py = 0, and psi = 0
+          Eigen::VectorXd ptscar_x(ptsx.size());
+          Eigen::VectorXd ptscar_y(ptsy.size());
+          for (int i = 0; i < ptsx.size(); i++) {
+            double dx = ptsx[i] - px;
+            double dy = ptsy[i] - py;
+            ptscar_x[i] = dx * cos(-psi) - dy * sin(-psi);
+            ptscar_y[i] = dx * sin(-psi) + dy * cos(-psi);
+          }
+
+          auto coeffs = polyfit( ptscar_x, ptscar_y, 3);
+          
+          // CTE is the difference between polynomial evaluation and y
+          double cte = polyeval(coeffs, 0.0) - 0;
+
+          
+          // ePSI calculation
+          // LESSON 18.8 (Errors, Orientation Error)
+          // epsi = psi - psi_des 
+          // where:  psi_des =  arctan(f'(x))  , psi_des = psi desired
+          // double epsi = psi - arctan( coeffs[1] + 2*px*coeffs[2] + 3*coeffs[3]*pow(px,2)) 
+          // psi = 0, px =0 ==> epsi = -atan( coeffs[1] ) 
+          double epsi = -atan(coeffs[1]);
+
+
+          Eigen::VectorXd state(6);
+          state << 0,0,0,v,cte,epsi;
+          
 
           /*
           * TODO: Calculate steering angle and throttle using MPC.
@@ -98,31 +131,55 @@ int main() {
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
 
+          double Lf = 2.67;
+          if(delayInS!=0) {
+              // get future state if we are simulating latency
+              // we consider throttle_value an approximation of acceleration
+              state = mpc.stateSimulation(state, coeffs, delayInS, steer_value * deg2rad(25)*Lf, throttle_value );
+
+          }
+
+          auto vars = mpc.Solve(state, coeffs);
+
+
+          //----------
+          // returning [steering_angle, throttle]
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
           // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = throttle_value;
+          msgJson["steering_angle"] = vars[0]/(deg2rad(25)*Lf);
+          msgJson["throttle"] = vars[1];
 
+
+          //----------
           //Display the MPC predicted trajectory 
           vector<double> mpc_x_vals;
           vector<double> mpc_y_vals;
 
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Green line
+          for( int i=2; i<vars.size(); i++ ) {
+              if(i%2==0) 
+                  mpc_x_vals.push_back(vars[i]);
+              else
+                  mpc_y_vals.push_back(vars[i]);
+          }
 
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
 
+
+
+          //----------
           //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Yellow line
+          double step = 2.5;
+          int inter_count = 60;
+          for( int i=0; i<inter_count; i++ ) {
+              next_x_vals.push_back(step*i);
+              next_y_vals.push_back(polyeval(coeffs, step*i));
+          }
 
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
@@ -139,7 +196,7 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          this_thread::sleep_for(chrono::milliseconds(100));
+          this_thread::sleep_for(chrono::milliseconds( (int)(delayInS*1000) ) );
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {
